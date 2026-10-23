@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>5일 강수 예보</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap">
+<style>
+:root{
+  --bg:#f4f7fa;--card:#ffffff;--ink:#17212b;--sub:#5c6b7a;--line:#dbe3ea;--off:#e3e9ee;
+  --btn:#17212b;--btn-ink:#ffffff;
+  --c0:#f0b23e;--c1:#9aa7b4;--s1:#8cc0e6;--s2:#4a90d0;--s3:#2f66b3;--s4:#4a3f9f;--s5:#7a2f8f;
+  --snow:#5fbfc7;--storm:#d1495b;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#1d242b;--card:#27303a;--ink:#eef2f5;--sub:#9fb0bf;--line:#364250;--off:#3a4654;--btn:#eef2f5;--btn-ink:#17212b;}
+}
+*{box-sizing:border-box;margin:0}
+html,body{background:var(--bg)}
+body{font-family:'IBM Plex Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif;color:var(--ink)}
+.wrap{padding:10px 12px 12px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.title{font-size:13px;color:var(--sub)}
+.title b{color:var(--ink);font-weight:700}
+.btn{font-size:12px;font-weight:500;padding:6px 12px;border-radius:999px;background:var(--btn);color:var(--btn-ink);text-decoration:none;white-space:nowrap}
+.btn:hover{opacity:.85}
+.btn:focus-visible{outline:2px solid var(--s2);outline-offset:2px}
+#days{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.day{background:var(--card);border-radius:10px;border-top:4px solid var(--c);padding:8px 8px 8px 10px;min-width:0}
+.c0{--c:var(--c0)}.c1{--c:var(--c1)}.s1{--c:var(--s1)}.s2{--c:var(--s2)}.s3{--c:var(--s3)}.s4{--c:var(--s4)}.s5{--c:var(--s5)}.snow{--c:var(--snow)}.storm{--c:var(--storm)}
+.d{font-size:12px;color:var(--sub)}
+.d b{color:var(--ink);font-weight:700;margin-right:4px}
+.lv{font-size:clamp(14px,2.6vw,22px);font-weight:700;margin:4px 0 6px;white-space:nowrap}
+.meter{display:flex;gap:2px;margin-bottom:6px}
+.meter i{flex:1;height:5px;border-radius:2px;background:var(--off)}
+.meter i.on{background:var(--c)}
+.meta,.t{font-size:11px;color:var(--sub);white-space:nowrap}
+.t{margin-top:2px}
+.msg{grid-column:1/-1;padding:18px 8px;text-align:center;font-size:13px;color:var(--sub)}
+@media (max-width:440px){.meta .mm{display:none}.wrap{padding:8px}#days{gap:5px}.day{padding:6px 5px 6px 7px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="title"><b id="place">5일 강수 예보</b> <span id="upd"></span></div>
+    <a class="btn" id="link" href="https://www.weather.go.kr/w/index.do" target="_blank" rel="noopener">기상청 날씨누리 열기</a>
+  </div>
+  <div id="days"><div class="msg">예보를 불러오는 중입니다.</div></div>
+</div>
+
+<script>
+// 설정: 주소 뒤에 ?lat=37.75&lon=128.87&name=강릉 처럼 붙여 위치를 바꿉니다.
+const q = new URLSearchParams(location.search);
+const num = (v, d) => (v !== null && v !== '' && isFinite(Number(v))) ? Number(v) : d;
+const LAT = num(q.get('lat'), 37.5665), LON = num(q.get('lon'), 126.978);
+const PLACE = q.get('name') || (q.get('lat') ? '' : '서울(기본 위치)');
+const DAILY = 'weather_code,precipitation_sum,precipitation_probability_max,temperature_2m_max,temperature_2m_min';
+const WEEK = ['일','월','화','수','목','금','토'];
+const RAIN_NAMES = ['', '약한 비', '비', '강한 비', '호우', '폭우'];
+
+async function get(model) {
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + LAT + '&longitude=' + LON +
+    '&daily=' + DAILY + '&timezone=Asia%2FSeoul&forecast_days=5' + (model ? '&models=' + model : '');
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (await r.json()).daily;
+}
+const valid = d => d && ['precipitation_sum', 'temperature_2m_max', 'temperature_2m_min'].every(
+  k => Array.isArray(d[k]) && d[k].length >= 5 && d[k].every(v => v != null));
+
+// 강수량(mm)과 날씨 코드로 단계 분류: 맑음 → 흐림 → 약한 비 → 비 → 강한 비 → 호우 → 폭우
+function classify(code, mm, prob) {
+  const score = mm < 0.1 ? 0 : mm < 3 ? 1 : mm < 15 ? 2 : mm < 30 ? 3 : mm < 80 ? 4 : 5;
+  if ([95, 96, 99].includes(code)) return { label: '뇌우', cls: 'storm', score: Math.max(score, 2) };
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return { label: '눈', cls: 'snow', score };
+  const rainCode = (code >= 51 && code <= 67) || (code >= 80 && code <= 82);
+  const s = score === 0 && rainCode && (prob == null || prob >= 50) ? 1 : score;
+  if (s > 0) return { label: RAIN_NAMES[s], cls: 's' + s, score: s };
+  if (code == null) return { label: '강수 없음', cls: 'c0', score: 0 };
+  if (code <= 1) return { label: '맑음', cls: 'c0', score: 0 };
+  if (code === 2) return { label: '구름 조금', cls: 'c1', score: 0 };
+  return { label: code === 45 || code === 48 ? '안개' : '흐림', cls: 'c1', score: 0 };
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function render(main, prob) {
+  const box = document.getElementById('days');
+  box.replaceChildren();
+  main.time.slice(0, 5).forEach((iso, i) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    const dow = WEEK[new Date(y, m - 1, d).getDay()];
+    const p = prob[i] != null ? prob[i] : null;
+    const c = classify(main.weather_code ? main.weather_code[i] : null, main.precipitation_sum[i], p);
+
+    const day = el('div', 'day ' + c.cls);
+    const head = el('div', 'd');
+    head.append(el('b', null, i === 0 ? '오늘' : i === 1 ? '내일' : dow), document.createTextNode(m + '/' + d));
+    const meter = el('div', 'meter');
+    for (let k = 1; k <= 5; k++) meter.append(el('i', k <= c.score ? 'on' : ''));
+    const meta = el('div', 'meta');
+    meta.append(document.createTextNode(p != null ? '확률 ' + p + '%' : ''));
+    if (main.precipitation_sum[i] >= 0.1) {
+      meta.append(el('span', 'mm', (p != null ? ' · ' : '') + Math.round(main.precipitation_sum[i]) + 'mm'));
+    }
+    const t = el('div', 't', Math.round(main.temperature_2m_min[i]) + '° / ' + Math.round(main.temperature_2m_max[i]) + '°');
+    day.append(head, el('div', 'lv', c.label), meter, meta, t);
+    box.append(day);
+  });
+  const now = new Date();
+  document.getElementById('upd').textContent = '· ' + now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0') + ' 갱신';
+}
+
+async function load() {
+  const place = document.getElementById('place');
+  place.textContent = PLACE ? PLACE + ' 5일 강수 예보' : '5일 강수 예보';
+  try {
+    // 한국 기상청 모델(kma_seamless)을 우선 사용하고, 값이 없으면 기본 모델로 대체합니다.
+    const [a, b] = await Promise.allSettled([get('kma_seamless'), get()]);
+    const kma = a.status === 'fulfilled' && valid(a.value) ? a.value : null;
+    const gen = b.status === 'fulfilled' && valid(b.value) ? b.value : null;
+    const main = kma || gen;
+    if (!main) throw new Error('no data');
+    const prob = (gen && gen.precipitation_probability_max) || main.precipitation_probability_max || [];
+    render(main, prob);
+  } catch (e) {
+    const box = document.getElementById('days');
+    box.replaceChildren(el('div', 'msg', '예보를 불러오지 못했습니다. 잠시 후 다시 시도하거나 기상청 버튼을 눌러 확인해 주세요.'));
+  }
+}
+load();
+setInterval(load, 30 * 60 * 1000);
+</script>
+</body>
+</html>
